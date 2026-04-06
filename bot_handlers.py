@@ -1,10 +1,18 @@
+"""
+Enhanced Bot Handlers Module - Fixed Concurrency & Permanent Links
+- Fixes: Atomic operations for concurrent message handling
+- New: Permanent source_link storage
+- New: Enhanced /get command for group retrieval
+- New: Better media resend logic
+"""
+
 import io
 import json
 import logging
 from datetime import datetime
 from urllib.parse import quote
 
-from telegram import Update
+from telegram import Update, InputMediaPhoto, InputMediaVideo, InputMediaDocument
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -20,12 +28,13 @@ telethon_client = None
 add_flow = AddFlowManager()
 
 
-# ---------- Telethon ----------
+# ---------- Telethon Client Setup ----------
 async def init_telethon():
+    """Initialize Telethon client for range mode"""
     global telethon_client
     if not (TG_API_ID and TG_API_HASH and TG_SESSION_NAME):
         telethon_client = None
-        logger.info("Telethon disabled.")
+        logger.info("Telethon disabled (missing credentials)")
         return
     try:
         telethon_client = TelegramClient(TG_SESSION_NAME, int(TG_API_ID), TG_API_HASH)
@@ -33,51 +42,54 @@ async def init_telethon():
         if not await telethon_client.is_user_authorized():
             await telethon_client.disconnect()
             telethon_client = None
-            logger.warning("Telethon session not authorized.")
+            logger.warning("Telethon session not authorized")
             return
-        logger.info("Telethon ready.")
+        logger.info("✅ Telethon ready for range mode")
     except Exception as e:
         telethon_client = None
         logger.warning(f"Telethon init failed: {e}")
 
 
-# ---------- Helpers ----------
+# ---------- Helper Functions ----------
 def is_sudo(uid: int) -> bool:
+    """Check if user is admin"""
     return uid in SUDO_ADMINS
 
-def next_simple_id():
-    x = dbase.db["counters"].find_one_and_update(
-        {"_id": "item_counter"},
-        {"$inc": {"seq": 1}},
-        upsert=True,
-        return_document=True
-    )
-    seq = x.get("seq", 1)
-    return f"a{seq}"
-
-def make_source_link(chat_username, chat_id, msg_id):
+def make_source_link(chat_username: str, chat_id: int, msg_id: int) -> str:
+    """Create permanent Telegram link (survives bot deletion)"""
     if chat_username and msg_id:
         return f"https://t.me/{chat_username}/{msg_id}"
     if chat_id and msg_id:
         cid = str(chat_id)
-        if cid.startswith("-100"): cid = cid[4:]
-        elif cid.startswith("-"): cid = cid[1:]
+        if cid.startswith("-100"):
+            cid = cid[4:]
+        elif cid.startswith("-"):
+            cid = cid[1:]
         return f"https://t.me/c/{cid}/{msg_id}"
     return None
 
-def build_deep_link(bot_username: str, item_id: str):
+def build_deep_link(bot_username: str, item_id: str) -> str:
+    """Create deep link for item retrieval"""
     return f"https://t.me/{bot_username}?start=get_{quote(item_id)}"
 
-def detect_kind(msg):
-    if msg.photo: return "photo"
-    if msg.video: return "video"
-    if msg.document: return "document"
-    if msg.audio: return "audio"
-    if msg.voice: return "voice"
-    if msg.animation: return "animation"
+def detect_media_kind(msg) -> str:
+    """Detect media type"""
+    if msg.photo:
+        return "photo"
+    if msg.video:
+        return "video"
+    if msg.document:
+        return "document"
+    if msg.audio:
+        return "audio"
+    if msg.voice:
+        return "voice"
+    if msg.animation:
+        return "animation"
     return "unknown"
 
-def extract_file_info(msg):
+def extract_file_info(msg) -> tuple:
+    """Extract file_id, file_unique_id, name, mime, size"""
     if msg.photo:
         p = msg.photo[-1]
         return p.file_id, p.file_unique_id, f"photo_{p.file_unique_id}.jpg", "image/jpeg", p.file_size
@@ -98,23 +110,33 @@ def extract_file_info(msg):
         return a.file_id, a.file_unique_id, (a.file_name or f"animation_{a.file_unique_id}.mp4"), a.mime_type, a.file_size
     return None, None, None, None, None
 
-def link_from_msg(msg):
-    return f"https://t.me/c/{str(msg.chat_id).replace('-100','').replace('-','')}/{msg.message_id}"
+def link_from_message(msg) -> str:
+    """Create permanent link from message"""
+    cid = str(msg.chat_id).replace("-100", "").replace("-", "")
+    return f"https://t.me/c/{cid}/{msg.message_id}"
 
 
-# ---------- Save single media ----------
-async def save_one_media(msg, bot_username: str, uid: int):
-    kind = detect_kind(msg)
+# ---------- Save Single Media ----------
+async def save_one_media(msg, bot_username: str, uid: int) -> tuple:
+    """
+    Save single forwarded/uploaded media
+    IMPROVED: Now stores permanent source_link
+    """
+    kind = detect_media_kind(msg)
     if kind == "unknown":
-        return None, "Unsupported media."
+        return None, "Unsupported media type"
 
     file_id, fuid, fname, mime, fsize = extract_file_info(msg)
+    if not file_id:
+        return None, "Could not extract file info"
 
+    # Source tracking (important for recovery)
     source_chat_id = msg.chat_id
     source_chat_username = getattr(msg.chat, "username", None)
     source_chat_title = getattr(msg.chat, "title", None)
     source_msg_id = msg.message_id
 
+    # Track forward origin
     if getattr(msg, "forward_origin", None) and getattr(msg.forward_origin, "sender_chat", None):
         sc = msg.forward_origin.sender_chat
         source_chat_id = getattr(sc, "id", source_chat_id)
@@ -125,8 +147,9 @@ async def save_one_media(msg, bot_username: str, uid: int):
 
     source_link = make_source_link(source_chat_username, source_chat_id, source_msg_id)
 
-    batch_no = dbase.next_batch_no()
-    item_id = next_simple_id()
+    # FIXED: Use atomic counter
+    batch_no = dbase.get_next_batch_no()
+    item_id = dbase.get_next_item_id()
     deep_link = build_deep_link(bot_username, item_id)
 
     doc = {
@@ -134,8 +157,8 @@ async def save_one_media(msg, bot_username: str, uid: int):
         "batch_no": batch_no,
         "deep_link": deep_link,
         "media_kind": kind,
-        "file_id": file_id,
-        "file_unique_id": fuid,
+        "file_id": file_id,  # Temporary (bot-specific)
+        "file_unique_id": fuid,  # Permanent identifier
         "file_name": fname,
         "mime_type": mime,
         "file_size": fsize,
@@ -145,27 +168,36 @@ async def save_one_media(msg, bot_username: str, uid: int):
         "source_chat_username": source_chat_username,
         "source_chat_title": source_chat_title,
         "source_message_id": source_msg_id,
-        "source_link": source_link,
+        "source_link": source_link,  # PERMANENT - survives bot deletion
         "added_by": uid,
         "created_at": datetime.utcnow(),
     }
-    dbase.media_col.insert_one(doc)
-    dbase.update_batch_count(batch_no, +1)
-    return doc, None
+
+    try:
+        dbase.insert_media_item(doc)
+        dbase.update_batch_count(batch_no, +1)
+        return doc, None
+    except Exception as e:
+        logger.exception("Save failed: %s", e)
+        return None, f"Database error: {str(e)}"
 
 
-# ---------- Save range by begin/end ----------
-async def save_range_by_links(begin_link: str, end_link: str, bot_username: str, uid: int):
+# ---------- Save Range via Telethon ----------
+async def save_range_by_links(begin_link: str, end_link: str, bot_username: str, uid: int) -> dict:
+    """
+    Save range of messages from begin to end
+    IMPROVED: Better error handling and atomic operations
+    """
     if not telethon_client:
-        return {"saved": 0, "scanned": 0, "error": "Telethon unavailable for range mode."}
+        return {"saved": 0, "scanned": 0, "error": "Telethon unavailable for range mode"}
 
     b = parse_link(begin_link)
     e = parse_link(end_link)
     if not b or not e:
-        return {"saved": 0, "scanned": 0, "error": "Invalid begin/end link."}
+        return {"saved": 0, "scanned": 0, "error": "Invalid begin/end links"}
 
     if b["type"] != e["type"] or str(b["chat"]) != str(e["chat"]):
-        return {"saved": 0, "scanned": 0, "error": "Begin and end must be from same chat."}
+        return {"saved": 0, "scanned": 0, "error": "Begin and end must be from same chat"}
 
     start_id, end_id = b["msg_id"], e["msg_id"]
     if start_id > end_id:
@@ -174,6 +206,9 @@ async def save_range_by_links(begin_link: str, end_link: str, bot_username: str,
     entity = b["chat"] if b["type"] == "public" else int(f"-100{b['chat']}")
     scanned = 0
     saved = 0
+    errors = 0
+
+    logger.info(f"Starting range scan: {start_id} to {end_id}")
 
     for mid in range(start_id, end_id + 1):
         scanned += 1
@@ -182,18 +217,19 @@ async def save_range_by_links(begin_link: str, end_link: str, bot_username: str,
             if not m or not m.media:
                 continue
 
-            kind = "photo" if m.photo else "video" if m.video else "document" if m.document else "unknown"
+            kind = detect_media_kind(m) if hasattr(m, "photo") or hasattr(m, "video") else "unknown"
             if kind == "unknown":
                 continue
 
+            # Get chat info
             chat = await m.get_chat()
             source_chat_id = getattr(chat, "id", None)
             source_chat_username = getattr(chat, "username", None)
             source_chat_title = getattr(chat, "title", None)
             source_link = make_source_link(source_chat_username, source_chat_id, m.id)
 
-            batch_no = dbase.next_batch_no()
-            item_id = next_simple_id()
+            batch_no = dbase.get_next_batch_no()
+            item_id = dbase.get_next_item_id()
             deep_link = build_deep_link(bot_username, item_id)
 
             doc = {
@@ -201,7 +237,7 @@ async def save_range_by_links(begin_link: str, end_link: str, bot_username: str,
                 "batch_no": batch_no,
                 "deep_link": deep_link,
                 "media_kind": kind,
-                "file_id": None,
+                "file_id": None,  # Can't get file_id from Telethon
                 "file_unique_id": None,
                 "file_name": getattr(getattr(m, "file", None), "name", None),
                 "mime_type": getattr(getattr(m, "file", None), "mime_type", None),
@@ -212,68 +248,93 @@ async def save_range_by_links(begin_link: str, end_link: str, bot_username: str,
                 "source_chat_username": source_chat_username,
                 "source_chat_title": source_chat_title,
                 "source_message_id": m.id,
-                "source_link": source_link,
+                "source_link": source_link,  # PERMANENT link
                 "added_by": uid,
                 "created_at": datetime.utcnow(),
             }
-            dbase.media_col.insert_one(doc)
+
+            dbase.insert_media_item(doc)
             dbase.update_batch_count(batch_no, +1)
             saved += 1
-        except Exception:
+
+        except Exception as e:
+            errors += 1
+            logger.warning(f"Error processing message {mid}: {e}")
             continue
 
+    logger.info(f"Range complete: {saved}/{scanned} saved, {errors} errors")
     return {"saved": saved, "scanned": scanned, "error": None}
 
 
 # ---------- Commands ----------
 HELP_TEXT = """
-<b>Commands</b>
-/start
-/help
-/add (sudo): asks BEGIN then END (link or forward)
-/addoff (sudo): cancel add mode
-/get &lt;item_id&gt;
-/send &lt;batch_no&gt;
-/all
-/remove &lt;item_id&gt; (sudo)
-/addmode on|off (sudo): bulk auto-capture media
+<b>📚 Telegram Filter Bot - Commands</b>
+
+<b>👤 Admin Commands:</b>
+/add - Add by range (begin → end links)
+/addoff - Cancel add operation
+/addmode on|off - Bulk capture mode
+/remove &lt;item_id&gt; - Delete item
+
+<b>👥 Public Commands:</b>
+/get &lt;item_id&gt; - Get item info
+/get_batch &lt;batch_no&gt; - Get entire batch (50 files)
+/send &lt;batch_no&gt; - Send batch media
+/all - Download all as JSON
+
+<b>📁 Batch System:</b>
+Files are organized in groups of 50.
+Each batch can be retrieved together.
+Use /get_batch to see all files in a group.
 """
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start command"""
     if context.args and context.args[0].startswith("get_"):
         item_id = context.args[0][4:]
-        doc = dbase.media_col.find_one({"item_id": item_id})
+        doc = dbase.get_item_by_id(item_id)
         if not doc:
-            await update.message.reply_text("Item not found.")
+            await update.message.reply_text("❌ Item not found")
             return
-        await update.message.reply_text(
-            f"ID: <code>{doc['item_id']}</code>\nBatch: <b>{doc['batch_no']}</b>\nSource: {doc.get('source_link') or 'N/A'}",
-            parse_mode=ParseMode.HTML
+        text = (
+            f"<b>Item Information</b>\n"
+            f"ID: <code>{doc['item_id']}</code>\n"
+            f"Batch: <b>{doc['batch_no']}</b>\n"
+            f"Type: {doc.get('media_kind', 'unknown')}\n"
+            f"Size: {doc.get('file_size', 'N/A')} bytes\n"
+            f"Saved: {doc.get('created_at', 'N/A')}\n"
+            f"<a href=\"{doc.get('source_link')}\">View Original</a>"
         )
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
         return
-    await update.message.reply_text("Welcome. Use /help")
+    
+    await update.message.reply_text("Welcome to Telegram Filter Bot\nUse /help for commands")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /help command"""
     await update.message.reply_text(HELP_TEXT, parse_mode=ParseMode.HTML)
 
 async def add_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start add flow (admin only)"""
     uid = update.effective_user.id
     if not is_sudo(uid):
-        await update.message.reply_text("❌ /add sudo-only.")
+        await update.message.reply_text("❌ Admin only")
         return
     await add_flow.start(uid, update.message.reply_text)
 
 async def addoff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel add flow"""
     uid = update.effective_user.id
     if not is_sudo(uid):
-        await update.message.reply_text("❌ /addoff sudo-only.")
+        await update.message.reply_text("❌ Admin only")
         return
-    await add_flow.cancel(uid, update.message.reply_text, "✅ Add cancelled.")
+    await add_flow.cancel(uid, update.message.reply_text, "✅ Add cancelled")
 
 async def addmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle bulk capture mode"""
     uid = update.effective_user.id
     if not is_sudo(uid):
-        await update.message.reply_text("❌ /addmode sudo-only.")
+        await update.message.reply_text("❌ Admin only")
         return
     if not context.args or context.args[0].lower() not in ("on", "off"):
         await update.message.reply_text("Usage: /addmode on|off")
@@ -286,87 +347,134 @@ async def addmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await stop_mode(uid, update.message.reply_text)
 
 async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Remove item (admin only)"""
     uid = update.effective_user.id
     if not is_sudo(uid):
-        await update.message.reply_text("❌ /remove sudo-only.")
+        await update.message.reply_text("❌ Admin only")
         return
     if not context.args:
         await update.message.reply_text("Usage: /remove <item_id>")
         return
+    
     item_id = context.args[0].strip()
-    doc = dbase.media_col.find_one({"item_id": item_id})
-    if not doc:
-        await update.message.reply_text("Item not found.")
-        return
-    dbase.media_col.delete_one({"item_id": item_id})
-    dbase.update_batch_count(doc["batch_no"], -1)
-    await update.message.reply_text(f"✅ Removed {item_id}")
+    deleted = dbase.delete_media_item(item_id)
+    if deleted:
+        await update.message.reply_text(f"✅ Removed {item_id}")
+    else:
+        await update.message.reply_text("❌ Item not found")
 
 async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get single item info"""
     if not context.args:
         await update.message.reply_text("Usage: /get <item_id>")
         return
+    
     item_id = context.args[0].strip()
-    doc = dbase.media_col.find_one({"item_id": item_id})
+    doc = dbase.get_item_by_id(item_id)
     if not doc:
-        await update.message.reply_text("Item not found.")
+        await update.message.reply_text("❌ Item not found")
         return
-    text = f"ID: <code>{doc['item_id']}</code>\nBatch: <b>{doc['batch_no']}</b>\nType: <b>{doc.get('media_kind')}</b>\nSource: {doc.get('source_link') or 'N/A'}"
+    
+    text = (
+        f"<b>📄 Item Details</b>\n"
+        f"ID: <code>{doc['item_id']}</code>\n"
+        f"Batch: <b>{doc['batch_no']}</b>\n"
+        f"Type: {doc.get('media_kind')}\n"
+        f"Name: {doc.get('file_name', 'N/A')}\n"
+        f"Size: {doc.get('file_size', 'N/A')} bytes\n"
+        f"Source: <a href=\"{doc.get('source_link')}\">View</a>"
+    )
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+async def get_batch_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Get entire batch info (NEW)"""
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /get_batch <batch_no>")
+        return
+    
+    batch_no = int(context.args[0])
+    items = dbase.get_items_in_batch(batch_no)
+    
+    if not items:
+        await update.message.reply_text(f"❌ Batch {batch_no} is empty")
+        return
+    
+    text = f"<b>📦 Batch {batch_no} ({len(items)} files)</b>\n\n"
+    for item in items:
+        text += f"• {item['item_id']} - {item.get('media_kind')} - {item.get('file_name', 'N/A')}\n"
+    
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def send_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send batch media (with media group support)"""
     if not context.args or not context.args[0].isdigit():
         await update.message.reply_text("Usage: /send <batch_no>")
         return
-    b = int(context.args[0])
-    items = list(dbase.media_col.find({"batch_no": b}).sort("created_at", 1))
+    
+    batch_no = int(context.args[0])
+    items = dbase.get_items_in_batch(batch_no)
+    
     if not items:
-        await update.message.reply_text("No items.")
+        await update.message.reply_text(f"❌ Batch {batch_no} has no items")
         return
-    for d in items:
-        t = f"{d['item_id']} | {d.get('media_kind')} | {d.get('source_link') or 'N/A'}"
-        if d.get("file_id") and d.get("media_kind") == "photo":
-            await update.message.reply_photo(d["file_id"], caption=t)
-        elif d.get("file_id") and d.get("media_kind") == "video":
-            await update.message.reply_video(d["file_id"], caption=t)
-        elif d.get("file_id") and d.get("media_kind") == "document":
-            await update.message.reply_document(d["file_id"], caption=t)
-        else:
-            await update.message.reply_text(t)
+    
+    # Separate by type
+    photos = [i for i in items if i.get("file_id") and i.get("media_kind") == "photo"]
+    videos = [i for i in items if i.get("file_id") and i.get("media_kind") == "video"]
+    docs = [i for i in items if i.get("file_id") and i.get("media_kind") == "document"]
+    others = [i for i in items if not i.get("file_id")]
+    
+    # Send as media group (faster for bulk)
+    if photos:
+        media_group = [InputMediaPhoto(i["file_id"]) for i in photos[:10]]  # Max 10 per group
+        if media_group:
+            await update.message.reply_media_group(media_group)
+    
+    # Send videos
+    for video in videos[:5]:  # Limit to avoid rate limit
+        await update.message.reply_video(video["file_id"], caption=f"{video['item_id']}")
+    
+    # Send documents
+    for doc in docs[:5]:
+        await update.message.reply_document(doc["file_id"], caption=f"{doc['item_id']}")
+    
+    # Send others as links
+    if others:
+        text = f"<b>📦 Batch {batch_no} - Archived Items</b>\n"
+        for item in others:
+            text += f"• <a href=\"{item['source_link']}\">View {item['item_id']}</a>\n"
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    batches = list(dbase.batch_col.find({}).sort("batch_no", 1))
-    items = list(dbase.media_col.find({}, {"_id": 0}).sort([("batch_no", 1), ("created_at", 1)]))
-
-    counts = {}
-    for it in items:
-        counts[it["batch_no"]] = counts.get(it["batch_no"], 0) + 1
-        if isinstance(it.get("created_at"), datetime):
-            it["created_at"] = it["created_at"].isoformat() + "Z"
-
-    batch_summary = []
-    for b in batches:
-        bn = b["batch_no"]
-        batch_summary.append({
-            "batch_no": bn,
-            "count": counts.get(bn, b.get("count", 0))
-        })
-
+    """Export all items as JSON"""
+    batches = dbase.get_all_batches(page_size=1000)
+    items = dbase.search_items({}, page_size=10000)
+    
+    # Convert datetime to ISO format
+    for item in items:
+        if isinstance(item.get("created_at"), datetime):
+            item["created_at"] = item["created_at"].isoformat() + "Z"
+    
     payload = {
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "total_batches": len(batch_summary),
+        "total_batches": len(batches),
         "total_items": len(items),
-        "batch_summary": batch_summary,
+        "batch_summary": [{"batch_no": b["batch_no"], "count": b.get("count", 0)} for b in batches],
         "items": items
     }
-
+    
     bio = io.BytesIO(json.dumps(payload, indent=2, default=str).encode("utf-8"))
     bio.name = "all_batches.json"
-    await update.message.reply_document(bio, caption=f"Total Batches: {len(batch_summary)} | Total Items: {len(items)}")
+    
+    await update.message.reply_document(
+        bio,
+        caption=f"📊 Total: {len(batches)} batches | {len(items)} items"
+    )
 
 
-# ---------- message handlers ----------
+# ---------- Message Handlers ----------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming media"""
     msg = update.message
     if not msg:
         return
@@ -377,7 +485,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     me = await context.bot.get_me()
 
-    # AddMode priority
+    # Priority: AddMode
     if is_on(uid):
         await enqueue(uid, msg, me.username, save_one_media)
         return
@@ -386,40 +494,36 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not st.active:
         return
 
-    # BEGIN can be forwarded/media
+    # BEGIN: accept media/forward
     if st.step == "begin":
-        st.begin_link = link_from_msg(msg)
+        st.begin_link = link_from_message(msg)
         st.step = "end"
         st.retry_count = 0
-        await msg.reply_text("✅ Begin received (from media/forward).\nNow send END link OR forward END message/media.")
+        await msg.reply_text("✅ Begin received\nNow send END link or forward media")
         return
 
-    # END can be forwarded/media
+    # END: accept media/forward
     if st.step == "end":
-        st.end_link = link_from_msg(msg)
-        await msg.reply_text("✅ End received. Processing range now...")
+        st.end_link = link_from_message(msg)
+        await msg.reply_text("✅ Processing range...")
         result = await save_range_by_links(st.begin_link, st.end_link, me.username, uid)
         if result["error"]:
             await msg.reply_text(f"❌ {result['error']}")
-            await add_flow.cancel(uid)
-            return
-        await msg.reply_text(
-            f"✅ Completed.\nScanned: {result['scanned']}\nSaved media: {result['saved']}\n(Batch size: 50 auto)"
-        )
+        else:
+            await msg.reply_text(
+                f"✅ Scanned: {result['scanned']}\n"
+                f"Saved: {result['saved']}\n"
+                f"(Batch size: 50)"
+            )
         await add_flow.cancel(uid)
         return
 
-    # fallback single save
-    doc, err = await save_one_media(msg, me.username, uid)
-    if err:
-        await msg.reply_text(f"❌ {err}")
-        return
-    await msg.reply_text(f"✅ Saved {doc['item_id']} in batch {doc['batch_no']}.")
-
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming text"""
     msg = update.message
     if not msg or not msg.text:
         return
+    
     uid = update.effective_user.id
     text = msg.text.strip()
 
@@ -431,10 +535,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = await save_range_by_links(res["begin_link"], res["end_link"], me.username, uid)
             if result["error"]:
                 await msg.reply_text(f"❌ {result['error']}")
-                await add_flow.cancel(uid)
-                return
-            await msg.reply_text(
-                f"✅ Completed.\nScanned: {result['scanned']}\nSaved media: {result['saved']}\n(Batch size: 50 auto)"
-            )
+            else:
+                await msg.reply_text(
+                    f"✅ Scanned: {result['scanned']}\n"
+                    f"Saved: {result['saved']}"
+                )
             await add_flow.cancel(uid)
-        return
