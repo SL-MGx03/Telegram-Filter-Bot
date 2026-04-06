@@ -23,13 +23,33 @@ telethon_client = None
 
 # ---------- Telethon ----------
 async def init_telethon():
+    """
+    Railway-safe Telethon init:
+    - Does NOT trigger interactive OTP login in headless environment.
+    - Only uses existing authorized session.
+    """
     global telethon_client
-    if TG_API_ID and TG_API_HASH:
+
+    if not (TG_API_ID and TG_API_HASH and TG_SESSION_NAME):
+        telethon_client = None
+        logger.info("Telethon disabled (missing TG_API_ID/TG_API_HASH/TG_SESSION_NAME).")
+        return
+
+    try:
         telethon_client = TelegramClient(TG_SESSION_NAME, int(TG_API_ID), TG_API_HASH)
-        await telethon_client.start()
-        logger.info("Telethon user session started.")
-    else:
-        logger.info("Telethon not configured (TG_API_ID/TG_API_HASH missing).")
+        await telethon_client.connect()
+
+        authorized = await telethon_client.is_user_authorized()
+        if not authorized:
+            logger.warning("Telethon session not authorized. Link fetch via Telethon disabled.")
+            await telethon_client.disconnect()
+            telethon_client = None
+            return
+
+        logger.info("Telethon authorized and ready.")
+    except Exception as e:
+        logger.warning(f"Telethon init failed, disabled: {e}")
+        telethon_client = None
 
 
 # ---------- Helpers ----------
@@ -154,7 +174,7 @@ async def save_from_forward_or_media(msg, bot_username: str, user_id: int):
 
 async def save_from_link(link: str, bot_username: str, user_id: int):
     if not telethon_client:
-        return None, "Telethon not configured. Add TG_API_ID and TG_API_HASH."
+        return None, "Telethon session unavailable. Configure & authorize Telethon session first."
 
     parsed = parse_tg_link(link)
     if not parsed:
@@ -185,7 +205,6 @@ async def save_from_link(link: str, bot_username: str, user_id: int):
         item_id = make_item_id()
         deep_link = build_deep_link(bot_username, item_id)
 
-        # Note: file_id not always available from Telethon-only fetch.
         doc = {
             "item_id": item_id,
             "batch_no": batch_no,
@@ -236,7 +255,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
-    # Handle deep-link payload /start get_<id>
     if context.args and context.args[0].startswith("get_"):
         item_id = context.args[0][4:]
         doc = dbase.media_col.find_one({"item_id": item_id})
@@ -380,6 +398,7 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     bio = io.BytesIO(json.dumps(payload, indent=2).encode("utf-8"))
     bio.name = "all_batches.json"
     await update.message.reply_document(document=bio, caption="All batches/items export.")
+
 
 # ---------- Message handlers ----------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
