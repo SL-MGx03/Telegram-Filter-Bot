@@ -13,6 +13,7 @@ from telethon import TelegramClient
 import database as dbase
 from config import SUDO_ADMINS, TG_API_ID, TG_API_HASH, TG_SESSION_NAME
 from add_flow import AddFlowManager, parse_link
+from addmode import start_mode, stop_mode, is_on, enqueue
 
 logger = logging.getLogger(__name__)
 telethon_client = None
@@ -235,6 +236,7 @@ HELP_TEXT = """
 /send &lt;batch_no&gt;
 /all
 /remove &lt;item_id&gt; (sudo)
+/addmode on|off (sudo): bulk auto-capture media
 """
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -267,6 +269,21 @@ async def addoff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ /addoff sudo-only.")
         return
     await add_flow.cancel(uid, update.message.reply_text, "✅ Add cancelled.")
+
+async def addmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    if not is_sudo(uid):
+        await update.message.reply_text("❌ /addmode sudo-only.")
+        return
+    if not context.args or context.args[0].lower() not in ("on", "off"):
+        await update.message.reply_text("Usage: /addmode on|off")
+        return
+
+    mode = context.args[0].lower()
+    if mode == "on":
+        await start_mode(uid, context.application, update.message.reply_text)
+    else:
+        await stop_mode(uid, update.message.reply_text)
 
 async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
@@ -321,7 +338,6 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batches = list(dbase.batch_col.find({}).sort("batch_no", 1))
     items = list(dbase.media_col.find({}, {"_id": 0}).sort([("batch_no", 1), ("created_at", 1)]))
 
-    # summary map: batch_no -> count
     counts = {}
     for it in items:
         counts[it["batch_no"]] = counts.get(it["batch_no"], 0) + 1
@@ -340,7 +356,7 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "total_batches": len(batch_summary),
         "total_items": len(items),
-        "batch_summary": batch_summary,   # <-- per-batch counts
+        "batch_summary": batch_summary,
         "items": items
     }
 
@@ -352,8 +368,18 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------- message handlers ----------
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
+    if not msg:
+        return
+
     uid = update.effective_user.id
     if not is_sudo(uid):
+        return
+
+    me = await context.bot.get_me()
+
+    # AddMode priority
+    if is_on(uid):
+        await enqueue(uid, msg, me.username, save_one_media)
         return
 
     st = add_flow.get_state(uid)
@@ -368,11 +394,10 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text("✅ Begin received (from media/forward).\nNow send END link OR forward END message/media.")
         return
 
-    # END can be forwarded/media too (FIXED)
+    # END can be forwarded/media
     if st.step == "end":
         st.end_link = link_from_msg(msg)
         await msg.reply_text("✅ End received. Processing range now...")
-        me = await context.bot.get_me()
         result = await save_range_by_links(st.begin_link, st.end_link, me.username, uid)
         if result["error"]:
             await msg.reply_text(f"❌ {result['error']}")
@@ -384,8 +409,7 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await add_flow.cancel(uid)
         return
 
-    # collect mode (if user keeps sending media) -> save single
-    me = await context.bot.get_me()
+    # fallback single save
     doc, err = await save_one_media(msg, me.username, uid)
     if err:
         await msg.reply_text(f"❌ {err}")
