@@ -5,7 +5,7 @@ from config import BOT_TOKEN
 import database as dbase
 from bot_handlers import (
     init_telethon,
-    start_cmd, help_cmd, add_cmd, addoff_cmd, remove_cmd, get_cmd, send_cmd, all_cmd,
+    start_cmd, help_cmd, add_cmd, addoff_cmd, remove_cmd, get_cmd, send_cmd, all_cmd, addmode_cmd,
     media_handler, text_handler
 )
 
