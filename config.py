@@ -1,31 +1,35 @@
-"""Configuration Module"""
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Required
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
-MONGODB_DB = os.getenv("MONGODB_DB", "telegram_deeplink_bot").strip()
+MONGODB_DB = os.getenv("MONGODB_DB", "tg_deeplink_bot").strip()
 
-# Sudo admins
-SUDO_ADMINS = set()
-for x in os.getenv("SUDO_ADMINS", "").split(","):
-    x = x.strip()
-    if x.isdigit():
-        SUDO_ADMINS.add(int(x))
+SUDO_ADMINS: set[int] = set()
+for _x in os.getenv("SUDO_ADMINS", "").split(","):
+    _x = _x.strip()
+    if _x.isdigit():
+        SUDO_ADMINS.add(int(_x))
 
-# Optional: Telethon for range mode
+# Telethon user-account (needed to fetch old / private channel messages)
 TG_API_ID = os.getenv("TG_API_ID", "").strip()
 TG_API_HASH = os.getenv("TG_API_HASH", "").strip()
-TG_SESSION_NAME = os.getenv("TG_SESSION_NAME", "railway_user_session").strip()
+TG_SESSION_NAME = os.getenv("TG_SESSION_NAME", "railway_session").strip()
 
-# Batch configuration
-BATCH_SIZE = 50  # Files per group
+# How many items go into one batch
+BATCH_SIZE = 50
 
-# Validation
+# Private channel where every file is re-uploaded for permanent storage.
+# Create a private channel, add your bot as admin with "Post messages" rights,
+# then paste its numeric ID here (e.g. -1001234567890).
+# Leave blank to disable archive (files will only be referenced by file_id).
+_arc = os.getenv("ARCHIVE_CHANNEL_ID", "").strip()
+ARCHIVE_CHANNEL_ID: int | None = int(_arc) if _arc.lstrip("-").isdigit() else None
+
+# ----- sanity checks -----
 if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN is required in .env")
+    raise RuntimeError("BOT_TOKEN is required.")
 if not MONGODB_URI:
-    raise RuntimeError("❌ MONGODB_URI is required in .env")
+    raise RuntimeError("MONGODB_URI is required.")
