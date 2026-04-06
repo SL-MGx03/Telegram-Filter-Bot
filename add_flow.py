@@ -128,3 +128,7 @@ class AddFlowManager:
                     }
 
             return {"handled": False}
+
+
+# Shared singleton used by commands and handlers
+add_flow = AddFlowManager()
