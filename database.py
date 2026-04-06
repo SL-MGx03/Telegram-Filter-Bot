@@ -2,7 +2,7 @@ from datetime import datetime
 from pymongo import MongoClient, ASCENDING, DESCENDING
 import certifi
 
-from config import MONGODB_URI, MONGODB_DB
+from config import MONGODB_URI, MONGODB_DB, BATCH_SIZE
 
 mongo_client = None
 db = None
@@ -17,18 +17,17 @@ def init_db():
         tlsCAFile=certifi.where(),
         serverSelectionTimeoutMS=30000,
     )
-    mongo_client.admin.command("ping")  # force real connection check
+    mongo_client.admin.command("ping")
     db = mongo_client[MONGODB_DB]
     media_col = db["media_items"]
     batch_col = db["batches"]
 
-def ensure_indexes():
     media_col.create_index([("item_id", ASCENDING)], unique=True)
     media_col.create_index([("batch_no", ASCENDING)])
     media_col.create_index([("created_at", DESCENDING)])
     batch_col.create_index([("batch_no", ASCENDING)], unique=True)
 
-def next_batch_no(batch_size: int) -> int:
+def next_batch_no():
     last = batch_col.find_one(sort=[("batch_no", DESCENDING)])
     if not last:
         batch_col.insert_one({
@@ -38,8 +37,10 @@ def next_batch_no(batch_size: int) -> int:
             "updated_at": datetime.utcnow(),
         })
         return 1
-    if last.get("count", 0) < batch_size:
+
+    if last.get("count", 0) < BATCH_SIZE:
         return last["batch_no"]
+
     new_no = last["batch_no"] + 1
     batch_col.insert_one({
         "batch_no": new_no,
