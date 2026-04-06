@@ -13,6 +13,7 @@ for x in os.getenv("SUDO_ADMINS", "").split(","):
     if x.isdigit():
         SUDO_ADMINS.add(int(x))
 
+# Optional: user account for old/private link access (Telethon)
 TG_API_ID = os.getenv("TG_API_ID", "").strip()
 TG_API_HASH = os.getenv("TG_API_HASH", "").strip()
 TG_SESSION_NAME = os.getenv("TG_SESSION_NAME", "railway_user_session").strip()
