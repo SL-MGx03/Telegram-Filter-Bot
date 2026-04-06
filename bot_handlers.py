@@ -28,7 +28,13 @@ from telegram.ext import ContextTypes
 from telethon import TelegramClient
 
 import database as dbase
-from config import SUDO_ADMINS, TG_API_ID, TG_API_HASH, TG_SESSION_NAME, ARCHIVE_CHANNEL_ID
+from config import (
+    SUDO_ADMINS,
+    TG_API_ID,
+    TG_API_HASH,
+    TG_SESSION_NAME,
+    ARCHIVE_CHANNEL_ID,
+)
 from add_flow import AddFlowManager, parse_link
 from addmode import start_mode, stop_mode, is_on, enqueue
 
@@ -37,10 +43,10 @@ logger = logging.getLogger(__name__)
 telethon_client: TelegramClient | None = None
 add_flow = AddFlowManager()
 
-
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 # Telethon initialisation (user-account for old / private channel messages)
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
+
 
 async def init_telethon():
     global telethon_client
@@ -48,12 +54,16 @@ async def init_telethon():
         logger.info("Telethon disabled – TG_API_ID / TG_API_HASH not set.")
         return
     try:
-        telethon_client = TelegramClient(TG_SESSION_NAME, int(TG_API_ID), TG_API_HASH)
+        telethon_client = TelegramClient(
+            TG_SESSION_NAME, int(TG_API_ID), TG_API_HASH
+        )
         await telethon_client.connect()
         if not await telethon_client.is_user_authorized():
             await telethon_client.disconnect()
             telethon_client = None
-            logger.warning("Telethon session not authorised – run auth_telethon.py first.")
+            logger.warning(
+                "Telethon session not authorised – run auth_telethon.py first."
+            )
             return
         me = await telethon_client.get_me()
         logger.info("Telethon ready as %s", getattr(me, "username", me.id))
@@ -62,9 +72,10 @@ async def init_telethon():
         logger.warning("Telethon init failed: %s", exc)
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 # Utility helpers
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
+
 
 def is_sudo(uid: int) -> bool:
     return uid in SUDO_ADMINS
@@ -88,12 +99,18 @@ def build_deep_link(bot_username: str, item_id: str) -> str:
 
 
 def detect_kind(msg) -> str:
-    if msg.photo:     return "photo"
-    if msg.video:     return "video"
-    if msg.document:  return "document"
-    if msg.audio:     return "audio"
-    if msg.voice:     return "voice"
-    if msg.animation: return "animation"
+    if msg.photo:
+        return "photo"
+    if msg.video:
+        return "video"
+    if msg.document:
+        return "document"
+    if msg.audio:
+        return "audio"
+    if msg.voice:
+        return "voice"
+    if msg.animation:
+        return "animation"
     return "unknown"
 
 
@@ -101,27 +118,58 @@ def extract_file_info(msg) -> tuple:
     """Returns (file_id, file_unique_id, file_name, mime_type, file_size)."""
     if msg.photo:
         p = msg.photo[-1]
-        return (p.file_id, p.file_unique_id,
-                f"photo_{p.file_unique_id}.jpg", "image/jpeg", p.file_size)
+        return (
+            p.file_id,
+            p.file_unique_id,
+            f"photo_{p.file_unique_id}.jpg",
+            "image/jpeg",
+            p.file_size,
+        )
     if msg.video:
         v = msg.video
-        return (v.file_id, v.file_unique_id,
-                v.file_name or f"video_{v.file_unique_id}.mp4", v.mime_type, v.file_size)
+        return (
+            v.file_id,
+            v.file_unique_id,
+            v.file_name or f"video_{v.file_unique_id}.mp4",
+            v.mime_type,
+            v.file_size,
+        )
     if msg.document:
         d = msg.document
-        return (d.file_id, d.file_unique_id, d.file_name, d.mime_type, d.file_size)
+        return (
+            d.file_id,
+            d.file_unique_id,
+            d.file_name,
+            d.mime_type,
+            d.file_size,
+        )
     if msg.audio:
         a = msg.audio
-        return (a.file_id, a.file_unique_id,
-                a.file_name or f"audio_{a.file_unique_id}.ogg", a.mime_type, a.file_size)
+        return (
+            a.file_id,
+            a.file_unique_id,
+            a.file_name or f"audio_{a.file_unique_id}.ogg",
+            a.mime_type,
+            a.file_size,
+        )
     if msg.voice:
         v = msg.voice
-        return (v.file_id, v.file_unique_id,
-                f"voice_{v.file_unique_id}.ogg", v.mime_type, v.file_size)
+        return (
+            v.file_id,
+            v.file_unique_id,
+            f"voice_{v.file_unique_id}.ogg",
+            v.mime_type,
+            v.file_size,
+        )
     if msg.animation:
         a = msg.animation
-        return (a.file_id, a.file_unique_id,
-                a.file_name or f"anim_{a.file_unique_id}.mp4", a.mime_type, a.file_size)
+        return (
+            a.file_id,
+            a.file_unique_id,
+            a.file_name or f"anim_{a.file_unique_id}.mp4",
+            a.mime_type,
+            a.file_size,
+        )
     return None, None, None, None, None
 
 
@@ -131,9 +179,10 @@ def link_from_msg(msg) -> str:
     return f"https://t.me/c/{cid}/{msg.message_id}"
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 # Core save functions
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
+
 
 async def _archive_message(bot, msg) -> tuple[int | None, str | None]:
     """
@@ -152,15 +201,7 @@ async def _archive_message(bot, msg) -> tuple[int | None, str | None]:
             from_chat_id=msg.chat_id,
             message_id=msg.message_id,
         )
-        # Fetch the archived message so we can grab its stable file_id
-        archived_msg = await bot.get_messages(ARCHIVE_CHANNEL_ID, archived.message_id) \
-            if hasattr(bot, "get_messages") else None
 
-        # get_messages is not a standard Bot API method on python-telegram-bot.
-        # Instead we rely on the fact that copy_message returns a Message object
-        # in recent PTB versions, or we forward and extract from there.
-        # Simplest reliable approach: re-fetch via forwardMessage trick is not needed —
-        # copy_message in PTB 21+ returns the new Message directly.
         archive_file_id = None
         if hasattr(archived, "photo") and archived.photo:
             archive_file_id = archived.photo[-1].file_id
@@ -224,7 +265,7 @@ async def save_one_media(msg, bot_username: str, uid: int) -> tuple[dict | None,
     stable_file_id = archive_file_id or file_id
 
     batch_no = dbase.next_batch_no()
-    item_id  = dbase.next_item_id()
+    item_id = dbase.next_item_id()
     deep_link = build_deep_link(bot_username, item_id)
 
     doc = {
@@ -270,21 +311,31 @@ async def save_range_by_links(
     and for messages of any age.
     """
     if not telethon_client:
-        return {"saved": 0, "scanned": 0,
-                "error": "Telethon is not available.  "
-                         "Set TG_API_ID / TG_API_HASH and run auth_telethon.py first."}
+        return {
+            "saved": 0,
+            "scanned": 0,
+            "error": "Telethon is not available.  "
+            "Set TG_API_ID / TG_API_HASH and run auth_telethon.py first.",
+        }
 
     b = parse_link(begin_link)
     e = parse_link(end_link)
     if not b or not e:
-        return {"saved": 0, "scanned": 0, "error": "Invalid begin or end link."}
+        return {
+            "saved": 0,
+            "scanned": 0,
+            "error": "Invalid begin or end link.",
+        }
 
     if b["type"] != e["type"] or str(b["chat"]) != str(e["chat"]):
-        return {"saved": 0, "scanned": 0,
-                "error": "BEGIN and END links must be from the same chat."}
+        return {
+            "saved": 0,
+            "scanned": 0,
+            "error": "BEGIN and END links must be from the same chat.",
+        }
 
     start_id = min(b["msg_id"], e["msg_id"])
-    end_id   = max(b["msg_id"], e["msg_id"])
+    end_id = max(b["msg_id"], e["msg_id"])
 
     # Resolve entity: public channels by username, private by numeric ID
     entity = b["chat"] if b["type"] == "public" else int(f"-100{b['chat']}")
@@ -298,27 +349,33 @@ async def save_range_by_links(
             if not m or not m.media:
                 continue
 
-            if m.photo:      kind = "photo"
-            elif m.video:    kind = "video"
-            elif m.document: kind = "document"
-            else:            continue
+            if m.photo:
+                kind = "photo"
+            elif m.video:
+                kind = "video"
+            elif m.document:
+                kind = "document"
+            else:
+                continue
 
             chat = await m.get_chat()
             source_chat_id = getattr(chat, "id", None)
             source_chat_username = getattr(chat, "username", None)
             source_chat_title = getattr(chat, "title", None)
-            source_link = make_source_link(source_chat_username, source_chat_id, m.id)
+            source_link = make_source_link(
+                source_chat_username, source_chat_id, m.id
+            )
 
             f = getattr(m, "file", None)
             batch_no = dbase.next_batch_no()
-            item_id  = dbase.next_item_id()
+            item_id = dbase.next_item_id()
 
             doc = {
                 "item_id": item_id,
                 "batch_no": batch_no,
                 "deep_link": build_deep_link(bot_username, item_id),
                 "media_kind": kind,
-                "file_id": None,               # Telethon IDs ≠ Bot API file_ids
+                "file_id": None,  # Telethon IDs ≠ Bot API file_ids
                 "file_unique_id": None,
                 "file_name": getattr(f, "name", None),
                 "mime_type": getattr(f, "mime_type", None),
@@ -339,7 +396,8 @@ async def save_range_by_links(
                 dbase.update_batch_count(batch_no, 1)
                 saved += 1
             except Exception:
-                pass  # likely duplicate
+                # likely duplicate
+                pass
 
         except Exception as exc:
             logger.warning("Error fetching msg %d: %s", mid, exc)
@@ -347,9 +405,9 @@ async def save_range_by_links(
     return {"saved": saved, "scanned": scanned, "error": None}
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 # Help text
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 
 HELP_TEXT = """\
 <b>📖 Bot Commands</b>
@@ -377,11 +435,14 @@ Every 50 items form a new batch.  Use /send to replay a batch.
 """
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 # Command handlers
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 
-async def _send_file_from_doc(bot, chat_id: int, doc: dict, caption: str) -> bool:
+
+async def _send_file_from_doc(
+    bot, chat_id: int, doc: dict, caption: str
+) -> bool:
     """
     Try to send the file represented by `doc`.
 
@@ -391,30 +452,39 @@ async def _send_file_from_doc(bot, chat_id: int, doc: dict, caption: str) -> boo
     2. Telethon re-download from archive channel  (if file_id is stale)
     3. Return False so caller can fall back to a text reply.
     """
-    fid  = doc.get("file_id")
+    fid = doc.get("file_id")
     kind = doc.get("media_kind")
 
     # ── attempt 1: Bot API file_id ──
     if fid:
         try:
             if kind == "photo":
-                await bot.send_photo(chat_id, fid, caption=caption, parse_mode=ParseMode.HTML)
+                await bot.send_photo(
+                    chat_id, fid, caption=caption, parse_mode=ParseMode.HTML
+                )
                 return True
             if kind == "video":
-                await bot.send_video(chat_id, fid, caption=caption, parse_mode=ParseMode.HTML)
+                await bot.send_video(
+                    chat_id, fid, caption=caption, parse_mode=ParseMode.HTML
+                )
                 return True
             if kind in ("document", "audio", "voice", "animation"):
-                await bot.send_document(chat_id, fid, caption=caption, parse_mode=ParseMode.HTML)
+                await bot.send_document(
+                    chat_id, fid, caption=caption, parse_mode=ParseMode.HTML
+                )
                 return True
         except Exception as exc:
-            logger.warning("file_id send failed (%s): %s – trying archive", fid, exc)
+            logger.warning(
+                "file_id send failed (%s): %s – trying archive", fid, exc
+            )
 
     # ── attempt 2: re-download from archive channel via Telethon ──
-    arc_ch  = doc.get("archive_channel_id")
+    arc_ch = doc.get("archive_channel_id")
     arc_mid = doc.get("archive_message_id")
     if telethon_client and arc_ch and arc_mid:
         try:
             import io as _io
+
             m = await telethon_client.get_messages(int(arc_ch), ids=int(arc_mid))
             if m and m.media:
                 buf = _io.BytesIO()
@@ -422,8 +492,12 @@ async def _send_file_from_doc(bot, chat_id: int, doc: dict, caption: str) -> boo
                 buf.seek(0)
                 fname = doc.get("file_name") or "file"
                 buf.name = fname
-                await bot.send_document(chat_id, buf,
-                                        caption=caption, parse_mode=ParseMode.HTML)
+                await bot.send_document(
+                    chat_id,
+                    buf,
+                    caption=caption,
+                    parse_mode=ParseMode.HTML,
+                )
                 return True
         except Exception as exc:
             logger.warning("Telethon archive re-download failed: %s", exc)
@@ -431,7 +505,14 @@ async def _send_file_from_doc(bot, chat_id: int, doc: dict, caption: str) -> boo
     return False
 
 
+async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start command.
 
+    - Plain /start       → welcome text.
+    - /start get_<id>   → fetch and display that item + deep link.
+    """
+    # Deep-link: ?start=get_<item_id>
     if context.args and context.args[0].startswith("get_"):
         item_id = context.args[0][4:]
         doc = dbase.media_col.find_one({"item_id": item_id})
@@ -440,7 +521,7 @@ async def _send_file_from_doc(bot, chat_id: int, doc: dict, caption: str) -> boo
             return
 
         text = (
-            f"📁 <b>Item found</b>\n\n"
+            "📁 <b>Item found</b>\n\n"
             f"ID: <code>{doc['item_id']}</code>\n"
             f"Batch: <b>{doc['batch_no']}</b>\n"
             f"Type: <b>{doc.get('media_kind', 'N/A')}</b>\n"
@@ -456,9 +537,12 @@ async def _send_file_from_doc(bot, chat_id: int, doc: dict, caption: str) -> boo
             context.bot, update.effective_chat.id, doc, text
         )
         if not sent:
-            await update.message.reply_html(text, disable_web_page_preview=True)
+            await update.message.reply_html(
+                text, disable_web_page_preview=True
+            )
         return
 
+    # Default /start – simple welcome
     await update.message.reply_html(
         "👋 <b>Welcome!</b>\n\nUse /help to see available commands.",
         disable_web_page_preview=True,
@@ -482,7 +566,9 @@ async def addoff_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_sudo(uid):
         await update.message.reply_text("❌ /addoff is restricted to admins.")
         return
-    await add_flow.cancel(uid, lambda t: update.message.reply_text(t), "✅ Add flow cancelled.")
+    await add_flow.cancel(
+        uid, lambda t: update.message.reply_text(t), "✅ Add flow cancelled."
+    )
 
 
 async def addmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -495,17 +581,24 @@ async def addmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if context.args[0].lower() == "on":
-        await start_mode(uid, context.application,
-                         lambda t, **kw: update.message.reply_html(t))
+        await start_mode(
+            uid,
+            context.application,
+            lambda t, **kw: update.message.reply_html(t, **kw),
+        )
     else:
-        await stop_mode(uid,
-                        lambda t, **kw: update.message.reply_html(t, **kw))
+        await stop_mode(
+            uid,
+            lambda t, **kw: update.message.reply_html(t, **kw),
+        )
 
 
 async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if not is_sudo(uid):
-        await update.message.reply_text("❌ /remove is restricted to admins.")
+        await update.message.reply_text(
+            "❌ /remove is restricted to admins."
+        )
         return
     if not context.args:
         await update.message.reply_text("Usage: /remove <item_id>")
@@ -514,8 +607,10 @@ async def remove_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item_id = context.args[0].strip()
     doc = dbase.media_col.find_one({"item_id": item_id})
     if not doc:
-        await update.message.reply_text(f"❌ Item <code>{item_id}</code> not found.",
-                                        parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            f"❌ Item <code>{item_id}</code> not found.",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     dbase.media_col.delete_one({"item_id": item_id})
@@ -533,12 +628,14 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     item_id = context.args[0].strip()
     doc = dbase.media_col.find_one({"item_id": item_id})
     if not doc:
-        await update.message.reply_text(f"❌ Item <code>{item_id}</code> not found.",
-                                        parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            f"❌ Item <code>{item_id}</code> not found.",
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     text = (
-        f"📁 <b>Item info</b>\n\n"
+        "📁 <b>Item info</b>\n\n"
         f"ID: <code>{doc['item_id']}</code>\n"
         f"Batch: <b>{doc['batch_no']}</b>\n"
         f"Type: <b>{doc.get('media_kind', 'N/A')}</b>\n"
@@ -556,7 +653,9 @@ async def get_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.bot, update.effective_chat.id, doc, text
     )
     if not sent:
-        await update.message.reply_html(text, disable_web_page_preview=True)
+        await update.message.reply_html(
+            text, disable_web_page_preview=True
+        )
 
 
 async def send_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -565,10 +664,14 @@ async def send_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     batch_no = int(context.args[0])
-    items = list(dbase.media_col.find({"batch_no": batch_no}).sort("created_at", 1))
+    items = list(
+        dbase.media_col.find({"batch_no": batch_no}).sort("created_at", 1)
+    )
 
     if not items:
-        await update.message.reply_text(f"No items found in batch {batch_no}.")
+        await update.message.reply_text(
+            f"No items found in batch {batch_no}."
+        )
         return
 
     await update.message.reply_html(
@@ -586,13 +689,17 @@ async def send_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.bot, update.effective_chat.id, doc, caption
         )
         if not sent:
-            await update.message.reply_html(caption, disable_web_page_preview=True)
+            await update.message.reply_html(
+                caption, disable_web_page_preview=True
+            )
 
 
 async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batches = list(dbase.batch_col.find({}).sort("batch_no", 1))
     items = list(
-        dbase.media_col.find({}, {"_id": 0}).sort([("batch_no", 1), ("created_at", 1)])
+        dbase.media_col.find(
+            {}, {"_id": 0}
+        ).sort([("batch_no", 1), ("created_at", 1)])
     )
 
     # normalise datetimes for JSON
@@ -622,16 +729,18 @@ async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_document(
         bio,
         caption=(
-            f"📊 <b>All batches export</b>\n"
-            f"Batches: <b>{len(batch_summary)}</b> | Items: <b>{len(items)}</b>"
+            "📊 <b>All batches export</b>\n"
+            f"Batches: <b>{len(batch_summary)}</b> | "
+            f"Items: <b>{len(items)}</b>"
         ),
         parse_mode=ParseMode.HTML,
     )
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 # Message handlers
-# ────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────��─────────
+
 
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -697,25 +806,31 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not st.active:
         return
 
-    res = await add_flow.handle_text(uid, msg.text.strip(),
-                                     lambda t: msg.reply_html(t))
+    res = await add_flow.handle_text(
+        uid, msg.text.strip(), lambda t: msg.reply_html(t)
+    )
     if res.get("ready"):
         me = await context.bot.get_me()
-        await _run_range(msg, me.username, uid, res["begin_link"], res["end_link"])
+        await _run_range(
+            msg, me.username, uid, res["begin_link"], res["end_link"]
+        )
         await add_flow.cancel(uid)
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
 # Internal helpers
-# ────────────────────────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────
+
 
 async def _run_range(msg, bot_username, uid, begin_link, end_link):
-    result = await save_range_by_links(begin_link, end_link, bot_username, uid)
+    result = await save_range_by_links(
+        begin_link, end_link, bot_username, uid
+    )
     if result["error"]:
         await msg.reply_text(f"❌ {result['error']}")
     else:
         await msg.reply_html(
-            f"✅ <b>Range collection complete</b>\n\n"
+            "✅ <b>Range collection complete</b>\n\n"
             f"Scanned: <b>{result['scanned']}</b> messages\n"
             f"Saved: <b>{result['saved']}</b> media items\n"
             f"(Batches of {50} auto)"
