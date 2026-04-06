@@ -37,6 +37,7 @@ def main():
     app.add_handler(CommandHandler("get", get_cmd))
     app.add_handler(CommandHandler("send", send_cmd))
     app.add_handler(CommandHandler("all", all_cmd))
+    app.add_handler(CommandHandler("addmode", addmode_cmd))
 
     app.add_handler(MessageHandler(
         filters.PHOTO | filters.VIDEO | filters.Document.ALL | filters.AUDIO | filters.VOICE | filters.ANIMATION,
