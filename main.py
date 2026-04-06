@@ -16,11 +16,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 async def post_init(app):
-    dbase.init_db()
-    logger.info("MongoDB connected.")
-    await init_telethon()
-    me = await app.bot.get_me()
-    logger.info("Bot started as @%s", me.username)
+    try:
+        dbase.init_db()
+        logger.info("MongoDB connected.")
+        await init_telethon()
+        me = await app.bot.get_me()
+        logger.info("Bot started as @%s", me.username)
+    except Exception as e:
+        logger.exception("Startup failed: %s", e)
+        raise
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).post_init(post_init).build()
