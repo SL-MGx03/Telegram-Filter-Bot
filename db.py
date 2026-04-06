@@ -4,16 +4,23 @@ import certifi
 
 from config import MONGODB_URI, MONGODB_DB
 
-mongo_client = MongoClient(
-    MONGODB_URI,
-    tls=True,
-    tlsCAFile=certifi.where(),
-    serverSelectionTimeoutMS=30000,
-)
+mongo_client = None
+db = None
+media_col = None
+batch_col = None
 
-db = mongo_client[MONGODB_DB]
-media_col = db["media_items"]
-batch_col = db["batches"]
+def init_db():
+    global mongo_client, db, media_col, batch_col
+    mongo_client = MongoClient(
+        MONGODB_URI,
+        tls=True,
+        tlsCAFile=certifi.where(),
+        serverSelectionTimeoutMS=30000,
+    )
+    mongo_client.admin.command("ping")  # force real connection check
+    db = mongo_client[MONGODB_DB]
+    media_col = db["media_items"]
+    batch_col = db["batches"]
 
 def ensure_indexes():
     media_col.create_index([("item_id", ASCENDING)], unique=True)
@@ -33,7 +40,6 @@ def next_batch_no(batch_size: int) -> int:
         return 1
     if last.get("count", 0) < batch_size:
         return last["batch_no"]
-
     new_no = last["batch_no"] + 1
     batch_col.insert_one({
         "batch_no": new_no,
