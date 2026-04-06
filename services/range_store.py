@@ -36,7 +36,13 @@ async def save_range_by_links(begin_link: str, end_link: str, bot_username: str,
             if not m or not m.media:
                 continue
 
-            kind = "photo" if m.photo else "video" if m.video else "document" if m.document else "unknown"
+            kind = "unknown"
+            if m.photo:
+                kind = "photo"
+            elif m.video:
+                kind = "video"
+            elif m.document:
+                kind = "document"
             if kind == "unknown":
                 continue
 

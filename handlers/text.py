@@ -2,6 +2,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from add_flow import add_flow
+from config import BATCH_SIZE
 from services.range_store import save_range_by_links
 from utils.helpers import is_sudo
 
@@ -24,7 +25,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await add_flow.cancel(uid)
                 return
             await msg.reply_text(
-                f"✅ Completed.\nScanned: {result['scanned']}\nSaved media: {result['saved']}\n(Batch size: 50 auto)"
+                f"✅ Completed.\nScanned: {result['scanned']}\nSaved media: {result['saved']}\n(Batch size: {BATCH_SIZE} auto)"
             )
             await add_flow.cancel(uid)
         return

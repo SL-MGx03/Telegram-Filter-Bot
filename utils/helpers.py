@@ -69,4 +69,4 @@ def extract_file_info(msg):
 
 
 def link_from_msg(msg):
-    return f"https://t.me/c/{str(msg.chat_id).replace('-100', '').replace('-', '')}/{msg.message_id}"
+    return make_source_link(None, msg.chat_id, msg.message_id)
