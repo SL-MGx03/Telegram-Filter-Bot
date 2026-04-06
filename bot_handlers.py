@@ -97,6 +97,9 @@ def extract_file_info(msg):
         return a.file_id, a.file_unique_id, (a.file_name or f"animation_{a.file_unique_id}.mp4"), a.mime_type, a.file_size
     return None, None, None, None, None
 
+def link_from_msg(msg):
+    return f"https://t.me/c/{str(msg.chat_id).replace('-100','').replace('-','')}/{msg.message_id}"
+
 
 # ---------- Save single media ----------
 async def save_one_media(msg, bot_username: str, uid: int):
@@ -153,24 +156,26 @@ async def save_one_media(msg, bot_username: str, uid: int):
 # ---------- Save range by begin/end ----------
 async def save_range_by_links(begin_link: str, end_link: str, bot_username: str, uid: int):
     if not telethon_client:
-        return 0, "Telethon unavailable for range mode."
+        return {"saved": 0, "scanned": 0, "error": "Telethon unavailable for range mode."}
 
     b = parse_link(begin_link)
     e = parse_link(end_link)
     if not b or not e:
-        return 0, "Invalid begin/end link."
+        return {"saved": 0, "scanned": 0, "error": "Invalid begin/end link."}
 
     if b["type"] != e["type"] or str(b["chat"]) != str(e["chat"]):
-        return 0, "Begin and end must be from same chat."
+        return {"saved": 0, "scanned": 0, "error": "Begin and end must be from same chat."}
 
     start_id, end_id = b["msg_id"], e["msg_id"]
     if start_id > end_id:
         start_id, end_id = end_id, start_id
 
     entity = b["chat"] if b["type"] == "public" else int(f"-100{b['chat']}")
+    scanned = 0
     saved = 0
 
     for mid in range(start_id, end_id + 1):
+        scanned += 1
         try:
             m = await telethon_client.get_messages(entity, ids=mid)
             if not m or not m.media:
@@ -195,7 +200,7 @@ async def save_range_by_links(begin_link: str, end_link: str, bot_username: str,
                 "batch_no": batch_no,
                 "deep_link": deep_link,
                 "media_kind": kind,
-                "file_id": None,  # telethon range mode metadata/link save
+                "file_id": None,
                 "file_unique_id": None,
                 "file_name": getattr(getattr(m, "file", None), "name", None),
                 "mime_type": getattr(getattr(m, "file", None), "mime_type", None),
@@ -216,7 +221,7 @@ async def save_range_by_links(begin_link: str, end_link: str, bot_username: str,
         except Exception:
             continue
 
-    return saved, None
+    return {"saved": saved, "scanned": scanned, "error": None}
 
 
 # ---------- Commands ----------
@@ -224,7 +229,7 @@ HELP_TEXT = """
 <b>Commands</b>
 /start
 /help
-/add (sudo): asks BEGIN then END link (range mode)
+/add (sudo): asks BEGIN then END (link or forward)
 /addoff (sudo): cancel add mode
 /get &lt;item_id&gt;
 /send &lt;batch_no&gt;
@@ -315,19 +320,33 @@ async def send_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     batches = list(dbase.batch_col.find({}).sort("batch_no", 1))
     items = list(dbase.media_col.find({}, {"_id": 0}).sort([("batch_no", 1), ("created_at", 1)]))
-    for x in items:
-        if isinstance(x.get("created_at"), datetime):
-            x["created_at"] = x["created_at"].isoformat() + "Z"
+
+    # summary map: batch_no -> count
+    counts = {}
+    for it in items:
+        counts[it["batch_no"]] = counts.get(it["batch_no"], 0) + 1
+        if isinstance(it.get("created_at"), datetime):
+            it["created_at"] = it["created_at"].isoformat() + "Z"
+
+    batch_summary = []
+    for b in batches:
+        bn = b["batch_no"]
+        batch_summary.append({
+            "batch_no": bn,
+            "count": counts.get(bn, b.get("count", 0))
+        })
+
     payload = {
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "total_batches": len(batches),
+        "total_batches": len(batch_summary),
         "total_items": len(items),
-        "batches": batches,
+        "batch_summary": batch_summary,   # <-- per-batch counts
         "items": items
     }
+
     bio = io.BytesIO(json.dumps(payload, indent=2, default=str).encode("utf-8"))
     bio.name = "all_batches.json"
-    await update.message.reply_document(bio)
+    await update.message.reply_document(bio, caption=f"Total Batches: {len(batch_summary)} | Total Items: {len(items)}")
 
 
 # ---------- message handlers ----------
@@ -341,21 +360,31 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not st.active:
         return
 
-    # In add flow: media can be begin marker (or direct single save once begin/end done)
+    # BEGIN can be forwarded/media
     if st.step == "begin":
-        # begin by forwarded media message id reference
-        fake_begin = f"https://t.me/c/{str(msg.chat_id).replace('-100','').replace('-','')}/{msg.message_id}"
-        st.begin_link = fake_begin
+        st.begin_link = link_from_msg(msg)
         st.step = "end"
         st.retry_count = 0
-        await msg.reply_text("✅ Begin media received. Now send END telegram link.")
+        await msg.reply_text("✅ Begin received (from media/forward).\nNow send END link OR forward END message/media.")
         return
 
+    # END can be forwarded/media too (FIXED)
     if st.step == "end":
-        await msg.reply_text("❌ END must be a telegram link.")
+        st.end_link = link_from_msg(msg)
+        await msg.reply_text("✅ End received. Processing range now...")
+        me = await context.bot.get_me()
+        result = await save_range_by_links(st.begin_link, st.end_link, me.username, uid)
+        if result["error"]:
+            await msg.reply_text(f"❌ {result['error']}")
+            await add_flow.cancel(uid)
+            return
+        await msg.reply_text(
+            f"✅ Completed.\nScanned: {result['scanned']}\nSaved media: {result['saved']}\n(Batch size: 50 auto)"
+        )
+        await add_flow.cancel(uid)
         return
 
-    # if collect state and user sends media directly, save single too
+    # collect mode (if user keeps sending media) -> save single
     me = await context.bot.get_me()
     doc, err = await save_one_media(msg, me.username, uid)
     if err:
@@ -370,20 +399,18 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     text = msg.text.strip()
 
-    # handle /add flow steps
     st = add_flow.get_state(uid)
     if st.active and is_sudo(uid):
         res = await add_flow.handle_text(uid, text, msg.reply_text)
         if res.get("ready"):
             me = await context.bot.get_me()
-            total, err = await save_range_by_links(res["begin_link"], res["end_link"], me.username, uid)
-            if err:
-                await msg.reply_text(f"❌ {err}")
+            result = await save_range_by_links(res["begin_link"], res["end_link"], me.username, uid)
+            if result["error"]:
+                await msg.reply_text(f"❌ {result['error']}")
                 await add_flow.cancel(uid)
                 return
-            await msg.reply_text(f"✅ Completed. Saved {total} media items. Batched by 50 automatically.")
+            await msg.reply_text(
+                f"✅ Completed.\nScanned: {result['scanned']}\nSaved media: {result['saved']}\n(Batch size: 50 auto)"
+            )
             await add_flow.cancel(uid)
         return
-
-    # optional: ignore text outside flow
-    return
